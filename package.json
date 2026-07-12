@@ -1,0 +1,14 @@
+{
+  "name": "xena-backend",
+  "version": "2.0.0",
+  "description": "Scramjet v2 Pipeline Gateway for XENA",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "http-proxy": "^1.18.1"
+  }
+}
