@@ -13,42 +13,48 @@ const proxy = httpProxy.createProxyServer({
 
 app.use(cors({ origin: '*' }));
 
-// Active routing table to track target context across asset calls
-let currentTargetOrigin = '';
-
-// Safe request preparation: Fixes the ERR_HTTP_HEADERS_SENT crash
+// Safe Header Injection Matrix
 proxy.on('proxyReq', function(proxyReq, req, res, options) {
-  // Use the active target origin to rewrite standard security headers
-  if (currentTargetOrigin) {
+  if (req.targetCleanOrigin) {
     try {
-      const parsed = new URL(currentTargetOrigin);
+      const parsed = new URL(req.targetCleanOrigin);
       proxyReq.setHeader('host', parsed.host);
       proxyReq.setHeader('origin', parsed.origin);
       proxyReq.setHeader('referer', parsed.origin + '/');
+      
+      // Keep credentials clean across cross-origin asset pools
+      proxyReq.setHeader('X-Forwarded-For', req.ip);
     } catch (e) {}
   }
-  
-  // Overwrite the compression profile safely before headers lock down
+  // Strip compression to allow clean rewriting of background JS scripts
   proxyReq.setHeader('accept-encoding', 'identity');
 });
 
-// Intercept frame response payloads seamlessly
+// Intercept, Rewrite, and Re-route internal application pathways
 proxy.on('proxyRes', function (proxyRes, req, res) {
   let chunks = [];
-  
   const headers = { ...proxyRes.headers };
   
-  // Strip hard application policies that break iframe sandboxes
+  // Wipe strict security sandbox blocks completely
   delete headers['content-security-policy'];
   delete headers['content-security-policy-report-only'];
   delete headers['x-frame-options'];
   delete headers['frame-options'];
   delete headers['clear-site-data'];
   
-  // Enforce total framing authorization
   headers['x-frame-options'] = 'ALLOWALL';
   headers['access-control-allow-origin'] = '*';
   headers['access-control-allow-headers'] = '*';
+  headers['access-control-allow-credentials'] = 'true';
+
+  // Fix cookies so TikTok/Reddit session states remain inside the proxy frame
+  if (headers['set-cookie']) {
+    headers['set-cookie'] = headers['set-cookie'].map(cookie => {
+      return cookie
+        .replace(/Domain=[^;]+;?/i, '') // Force local scope domain execution
+        .replace(/Secure/i, '');       // Prevent secure transport blocks in local sandboxes
+    });
+  }
 
   proxyRes.on('data', function (chunk) {
     chunks.push(chunk);
@@ -58,25 +64,24 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
     let buffer = Buffer.concat(chunks);
     const contentType = proxyRes.headers['content-type'] || '';
 
-    if (contentType.includes('text/html') && buffer.length > 0 && currentTargetOrigin) {
+    if ((contentType.includes('text/html') || contentType.includes('application/javascript')) && buffer.length > 0 && req.targetCleanOrigin) {
       try {
-        let htmlString = buffer.toString('utf8');
-
-        // Dynamic Link Realignment: Converts hardcoded assets to proxy routing paths
-        const escapedOrigin = currentTargetOrigin.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-        const originRegex = new RegExp(escapedOrigin, 'g');
+        let textContent = buffer.toString('utf8');
         const hostUrl = req.protocol + '://' + req.get('host');
-        htmlString = htmlString.replace(originRegex, hostUrl);
 
-        buffer = Buffer.from(htmlString, 'utf8');
+        // Capture static absolute links and reroute them straight through our path matrix
+        const escapedOrigin = req.targetCleanOrigin.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+        const originRegex = new RegExp(escapedOrigin, 'g');
+        textContent = textContent.replace(originRegex, `${hostUrl}/proxy/${req.targetCleanOrigin}`);
+
+        buffer = Buffer.from(textContent, 'utf8');
       } catch (err) {
-        console.error('HTML Text manipulation parsing error:', err);
+        console.error('Asset body modification error handled:', err);
       }
     }
 
     headers['content-length'] = buffer.length;
     
-    // Prevent double header output check
     if (!res.headersSent) {
       res.writeHead(proxyRes.statusCode, headers);
       res.end(buffer);
@@ -84,32 +89,55 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
   });
 });
 
+// Primary Entry Gateway Linkage
 app.get('/gateway', (req, res) => {
   const targetUrl = req.query.url;
-  if (!targetUrl) return res.status(400).send('Error: Missing target parameter route.');
-
+  if (!targetUrl) return res.status(400).send('Error: Missing target url query parameter.');
+  
   try {
     const parsedTarget = new URL(targetUrl);
-    currentTargetOrigin = parsedTarget.origin; // Dynamically bind target state
-    
-    req.url = parsedTarget.pathname + parsedTarget.search;
-
-    proxy.web(req, res, { target: parsedTarget.origin }, (err) => {
-      if (!res.headersSent) res.status(500).send(`Gateway Error: ${err.message}`);
-    });
+    res.redirect(`/proxy/${parsedTarget.origin}${parsedTarget.pathname}${parsedTarget.search}`);
   } catch (err) {
-    res.status(400).send('Gateway Error: Malformed URL pattern.');
+    res.status(400).send('Gateway Error: Malformed URL pattern structure.');
   }
 });
 
-app.all('*', (req, res) => {
-  if (!currentTargetOrigin) return res.status(404).send('Not Found: No proxy target active.');
+// Dynamic State-Passing Wildcard Middleware Router
+app.all('/proxy/:targetProtocol//:targetHost/*', (req, res) => {
+  routeTraffic(req, res);
+});
 
-  proxy.web(req, res, { target: currentTargetOrigin }, (err) => {
-    if (!res.headersSent) res.status(500).send(`Proxy Error: ${err.message}`);
-  });
+app.all('/proxy/:targetFullOrigin/*', (req, res) => {
+  routeTraffic(req, res);
+});
+
+function routeTraffic(req, res) {
+  let rawUrl = req.params.targetFullOrigin || `${req.params.targetProtocol}//${req.params.targetHost}`;
+  
+  // Reconstruct full resource pathing cleanly
+  const remainder = req.params[0] || '';
+  const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+  
+  let targetUrl = `${rawUrl}/${remainder}${queryString}`;
+
+  try {
+    const parsedTarget = new URL(targetUrl);
+    req.targetCleanOrigin = parsedTarget.origin;
+    req.url = parsedTarget.pathname + parsedTarget.search;
+
+    proxy.web(req, res, { target: parsedTarget.origin }, (err) => {
+      if (!res.headersSent) res.status(500).send(`Proxy Routing Fault: ${err.message}`);
+    });
+  } catch (err) {
+    if (!res.headersSent) res.status(400).send('Proxy Error: Invalid path mapping context runtime.');
+  }
+}
+
+// Global fallback handler to bind relative assets cleanly to the root proxy channel
+app.all('*', (req, res) => {
+  res.status(404).send('Resource path out of sync. Please reload your target tab framework layout.');
 });
 
 app.listen(PORT, () => {
-  console.log(`[XENA ENGINE v2] Running cleanly on port ${PORT}`);
+  console.log(`[XENA ENGINE v2] Stateful Path Matrix running cleanly on port ${PORT}`);
 });
