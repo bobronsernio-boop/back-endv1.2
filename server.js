@@ -12,6 +12,7 @@ app.use(cors({ origin: '*' }));
 
 let lastTargetOrigin = '';
 
+// Intercept frame response payloads safely
 proxy.on('proxyRes', function (proxyRes, req, res) {
   let chunks = [];
   
@@ -34,10 +35,9 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
     const contentType = proxyRes.headers['content-type'] || '';
     const contentEncoding = proxyRes.headers['content-encoding'] || '';
 
-    // Handle incoming compression wrappers safely
     if (contentType.includes('text/html') && buffer.length > 0) {
       try {
-        // Decompress if the website sent zipped data
+        // Decompress GZIP/Deflate streams natively
         if (contentEncoding === 'gzip') {
           buffer = zlib.gunzipSync(buffer);
         } else if (contentEncoding === 'deflate') {
@@ -46,26 +46,7 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
 
         let htmlString = buffer.toString('utf8');
 
-        // 1. DuckDuckGo Dark Mode Injection
-        if (req.url.includes('duckduckgo.com') || (lastTargetOrigin && lastTargetOrigin.includes('duckduckgo.com'))) {
-          const darkModeScript = `
-            <script>
-              (function() {
-                document.cookie = "ae=d; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-                document.cookie = "7=212121; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-                document.cookie = "8=ffffff; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-                document.cookie = "9=00ff66; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-                if (!window.location.search.includes('kae=d')) {
-                  const sep = window.location.search ? '&' : '?';
-                  window.location.href = window.location.pathname + window.location.search + sep + 'kae=d&k7=212121&k8=ffffff';
-                }
-              })();
-            </script>
-          `;
-          htmlString = htmlString.replace('<head>', '<head>' + darkModeScript);
-        }
-
-        // 2. Relative Path & Link Correction Matrix
+        // Body Link Realignment Matrices
         if (lastTargetOrigin) {
           const escapedOrigin = lastTargetOrigin.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
           const originRegex = new RegExp(escapedOrigin, 'g');
@@ -74,14 +55,14 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
 
         buffer = Buffer.from(htmlString, 'utf8');
 
-        // Re-compress the altered data before sending it out so the browser remains happy
+        // Re-compress the stream perfectly so the browser frame can process it
         if (contentEncoding === 'gzip') {
           buffer = zlib.gzipSync(buffer);
         } else if (contentEncoding === 'deflate') {
           buffer = zlib.deflateSync(buffer);
         }
       } catch (err) {
-        console.error('Text decoding optimization exception handled:', err);
+        console.error('Stream processing exception handled:', err);
       }
     }
 
