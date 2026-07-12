@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const httpProxy = require('http-proxy');
+const zlib = require('zlib');
 const { URL } = require('url');
 
 const app = express();
@@ -11,11 +12,9 @@ app.use(cors({ origin: '*' }));
 
 let lastTargetOrigin = '';
 
-// Intercept, filter, rewrite body payloads and strip blocking security profiles
 proxy.on('proxyRes', function (proxyRes, req, res) {
-  let body = [];
+  let chunks = [];
   
-  // Forward original status code and clean up problematic block headers
   const headers = { ...proxyRes.headers };
   delete headers['content-security-policy'];
   delete headers['content-security-policy-report-only'];
@@ -23,58 +22,72 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
   delete headers['frame-options'];
   delete headers['clear-site-data'];
   
-  // Force frame accessibility overrides
   headers['x-frame-options'] = 'ALLOWALL';
   headers['access-control-allow-origin'] = '*';
 
   proxyRes.on('data', function (chunk) {
-    body.push(chunk);
+    chunks.push(chunk);
   });
 
   proxyRes.on('end', function () {
-    body = Buffer.concat(body);
+    let buffer = Buffer.concat(chunks);
     const contentType = proxyRes.headers['content-type'] || '';
+    const contentEncoding = proxyRes.headers['content-encoding'] || '';
 
-    // Only inject rewrites and modifications into text/html scripts
-    if (contentType.includes('text/html')) {
-      let htmlString = body.toString('utf8');
+    // Handle incoming compression wrappers safely
+    if (contentType.includes('text/html') && buffer.length > 0) {
+      try {
+        // Decompress if the website sent zipped data
+        if (contentEncoding === 'gzip') {
+          buffer = zlib.gunzipSync(buffer);
+        } else if (contentEncoding === 'deflate') {
+          buffer = zlib.inflateSync(buffer);
+        }
 
-      // 1. DuckDuckGo Dark Mode Injection Hook
-      if (req.url.includes('duckduckgo.com')) {
-        const darkModeScript = `
-          <script>
-            (function() {
-              // Set DuckDuckGo design cookies for dark theme preference
-              document.cookie = "ae=d; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-              document.cookie = "7=212121; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-              document.cookie = "8=ffffff; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-              document.cookie = "9=00ff66; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
-              
-              // Force search settings via URL parameters if cookies are delayed
-              if (!window.location.search.includes('kae=d')) {
-                const separator = window.location.search ? '&' : '?';
-                window.location.href = window.location.pathname + window.location.search + separator + 'kae=d&k7=212121&k8=ffffff;';
-              }
-            })();
-          </script>
-        `;
-        htmlString = htmlString.replace('<head>', '<head>' + darkModeScript);
+        let htmlString = buffer.toString('utf8');
+
+        // 1. DuckDuckGo Dark Mode Injection
+        if (req.url.includes('duckduckgo.com') || (lastTargetOrigin && lastTargetOrigin.includes('duckduckgo.com'))) {
+          const darkModeScript = `
+            <script>
+              (function() {
+                document.cookie = "ae=d; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
+                document.cookie = "7=212121; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
+                document.cookie = "8=ffffff; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
+                document.cookie = "9=00ff66; path=/; domain=.duckduckgo.com; max-age=31536000; Secure";
+                if (!window.location.search.includes('kae=d')) {
+                  const sep = window.location.search ? '&' : '?';
+                  window.location.href = window.location.pathname + window.location.search + sep + 'kae=d&k7=212121&k8=ffffff';
+                }
+              })();
+            </script>
+          `;
+          htmlString = htmlString.replace('<head>', '<head>' + darkModeScript);
+        }
+
+        // 2. Relative Path & Link Correction Matrix
+        if (lastTargetOrigin) {
+          const escapedOrigin = lastTargetOrigin.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+          const originRegex = new RegExp(escapedOrigin, 'g');
+          htmlString = htmlString.replace(originRegex, req.protocol + '://' + req.get('host'));
+        }
+
+        buffer = Buffer.from(htmlString, 'utf8');
+
+        // Re-compress the altered data before sending it out so the browser remains happy
+        if (contentEncoding === 'gzip') {
+          buffer = zlib.gzipSync(buffer);
+        } else if (contentEncoding === 'deflate') {
+          buffer = zlib.deflateSync(buffer);
+        }
+      } catch (err) {
+        console.error('Text decoding optimization exception handled:', err);
       }
-
-      // 2. Body Link Realignment
-      // Dynamically matches and maps standard domain prefixes inside the webpage elements
-      if (lastTargetOrigin) {
-        const escapedOrigin = lastTargetOrigin.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-        const originRegex = new RegExp(escapedOrigin, 'g');
-        htmlString = htmlString.replace(originRegex, req.protocol + '://' + req.get('host'));
-      }
-
-      body = Buffer.from(htmlString, 'utf8');
-      headers['content-length'] = body.length;
     }
 
+    headers['content-length'] = buffer.length;
     res.writeHead(proxyRes.statusCode, headers);
-    res.end(body);
+    res.end(buffer);
   });
 });
 
@@ -85,7 +98,6 @@ app.get('/gateway', (req, res) => {
   try {
     const parsedTarget = new URL(targetUrl);
     lastTargetOrigin = parsedTarget.origin;
-    
     req.url = parsedTarget.pathname + parsedTarget.search;
 
     proxy.web(req, res, { target: parsedTarget.origin }, (err) => {
