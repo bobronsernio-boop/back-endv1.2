@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const httpProxy = require('http-proxy');
-const zlib = require('zlib');
 const { URL } = require('url');
 
 const app = express();
@@ -12,7 +11,12 @@ app.use(cors({ origin: '*' }));
 
 let lastTargetOrigin = '';
 
-// Intercept frame response payloads safely
+// BEFORE SENDING REQUEST: Tell the target site NOT to compress the data
+proxy.on('proxyReq', function(proxyReq, req, res, options) {
+  proxyReq.setHeader('accept-encoding', 'identity'); // Force uncompressed plaintext responses
+});
+
+// AFTER RECEIVING RESPONSE: Intercept and clean the code seamlessly
 proxy.on('proxyRes', function (proxyRes, req, res) {
   let chunks = [];
   
@@ -33,20 +37,12 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
   proxyRes.on('end', function () {
     let buffer = Buffer.concat(chunks);
     const contentType = proxyRes.headers['content-type'] || '';
-    const contentEncoding = proxyRes.headers['content-encoding'] || '';
 
     if (contentType.includes('text/html') && buffer.length > 0) {
       try {
-        // Decompress GZIP/Deflate streams natively
-        if (contentEncoding === 'gzip') {
-          buffer = zlib.gunzipSync(buffer);
-        } else if (contentEncoding === 'deflate') {
-          buffer = zlib.inflateSync(buffer);
-        }
-
         let htmlString = buffer.toString('utf8');
 
-        // Body Link Realignment Matrices
+        // Body Link Realignment Matrices (fixes broken assets and relative links)
         if (lastTargetOrigin) {
           const escapedOrigin = lastTargetOrigin.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
           const originRegex = new RegExp(escapedOrigin, 'g');
@@ -54,15 +50,8 @@ proxy.on('proxyRes', function (proxyRes, req, res) {
         }
 
         buffer = Buffer.from(htmlString, 'utf8');
-
-        // Re-compress the stream perfectly so the browser frame can process it
-        if (contentEncoding === 'gzip') {
-          buffer = zlib.gzipSync(buffer);
-        } else if (contentEncoding === 'deflate') {
-          buffer = zlib.deflateSync(buffer);
-        }
       } catch (err) {
-        console.error('Stream processing exception handled:', err);
+        console.error('HTML Text manipulation parsing error:', err);
       }
     }
 
