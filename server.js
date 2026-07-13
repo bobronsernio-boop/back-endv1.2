@@ -7,11 +7,9 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 8080;
 
-// Performance and connection telemetry metrics
 const startTime = Date.now();
 let totalRequestsHandled = 0;
 
-// XOR Key configuration for path de-obfuscation matching the frontend encryption matrix
 const KEY = [120, 101, 110, 97]; 
 function decodeXOR(str) {
   try {
@@ -28,7 +26,7 @@ function decodeXOR(str) {
   }
 }
 
-// Global CORS Isolation Defeat & Sandbox Breaking Headers
+// Global CORS Isolation & Sandbox Permissive Headers
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS');
@@ -42,7 +40,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// BACKEND ROOT ROUTE: Live Proxy Performance Status Monitor Dashboard
+// Root Dashboard
 app.get('/', (req, res) => {
   const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
   const hours = Math.floor(uptimeSeconds / 3600);
@@ -70,20 +68,22 @@ app.get('/', (req, res) => {
         <div class="stat"><span class="lbl">Engine State:</span><span class="value">ONLINE</span></div>
         <div class="stat"><span class="lbl">Uptime Metrics:</span><span class="value">${hours}h ${minutes}m ${seconds}s</span></div>
         <div class="stat"><span class="lbl">Requests Handled:</span><span class="value">${totalRequestsHandled}</span></div>
-        <div class="stat"><span class="lbl">Pipeline Mode:</span><span class="value">High-Grade Dynamic Pipe</span></div>
+        <div class="stat"><span class="lbl">Version Support:</span><span class="value">v1.1.3 Custom Dynamic</span></div>
       </div>
     </body>
     </html>
   `);
 });
 
-// WILDCARD ROUTE OVERRIDE: Catches absolutely any incoming path starting with /xn, /scram, or /gateway
-app.all(['/xn*', '/scram*', '/gateway*'], async (req, res) => {
+// GLOBAL CATCH-ALL ROUTE INTERCEPTOR
+app.use(async (req, res, next) => {
+  // If request is for root dashboard, let it pass through
+  if (req.path === '/') return next();
+
   totalRequestsHandled++;
-  
   let rawTargetUrl = req.query.url;
 
-  // If there's no explicit URL parameter, extract the encoded string directly from the URL path path
+  // Fallback: Parse out tokens directly from the URI path regardless of version prefixes
   if (!rawTargetUrl) {
     const segments = req.path.split('/');
     const lastSegment = segments[segments.length - 1];
@@ -94,13 +94,11 @@ app.all(['/xn*', '/scram*', '/gateway*'], async (req, res) => {
   }
 
   if (!rawTargetUrl) {
-    return res.status(400).send('Error: Invalid Destination Packet / Failed to parse token');
+    return res.status(400).send('Error: Invalid Destination Packet / Failed to parse proxy token');
   }
 
   try {
     const targetUrl = new URL(rawTargetUrl);
-    
-    // Mask request footprints to resemble native client requests
     const forwardHeaders = {};
     const secureHeaders = ['user-agent', 'accept', 'accept-language', 'range', 'cookie', 'content-type'];
     
@@ -111,7 +109,6 @@ app.all(['/xn*', '/scram*', '/gateway*'], async (req, res) => {
     forwardHeaders['host'] = targetUrl.host;
     forwardHeaders['referer'] = targetUrl.origin;
 
-    // Execute content retrieval pipeline
     const response = await fetch(targetUrl.href, {
       method: req.method,
       headers: forwardHeaders,
@@ -119,7 +116,6 @@ app.all(['/xn*', '/scram*', '/gateway*'], async (req, res) => {
       redirect: 'manual'
     });
 
-    // Intercept redirects seamlessly to process them inside proxy boundaries
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       let location = response.headers.get('location');
       if (location) {
@@ -131,16 +127,13 @@ app.all(['/xn*', '/scram*', '/gateway*'], async (req, res) => {
       }
     }
 
-    // Set standard response flags down to the web interface layout
     res.status(response.status);
     response.headers.forEach((val, key) => {
-      // Strip framing barriers and restrictive site tracking filters
       if (!['content-security-policy', 'x-frame-options', 'clear-site-data', 'cross-origin-opener-policy'].includes(key.toLowerCase())) {
         res.setHeader(key, val);
       }
     });
 
-    // Directly pipe chunks down to allow high-speed processing for multimedia files
     response.body.pipe(res);
 
   } catch (error) {
@@ -148,7 +141,7 @@ app.all(['/xn*', '/scram*', '/gateway*'], async (req, res) => {
   }
 });
 
-// WebSocket Protocol Handshake Mirroring
+// WebSocket Configuration
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
   wss.handleUpgrade(request, socket, head, (ws) => {
