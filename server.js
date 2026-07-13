@@ -1,136 +1,164 @@
-const express = require('express');
-const cors = require('cors');
-const httpProxy = require('http-proxy');
-const { URL } = require('url');
+import express from 'express';
+import http from 'http';
+import fetch from 'node-fetch';
+import { WebSocketServer } from 'ws';
 
 const app = express();
+const server = http.createServer(app);
 const PORT = process.env.PORT || 8080;
-const proxy = httpProxy.createProxyServer({ 
-  changeOrigin: true, 
-  followRedirects: true,
-  selfHandleResponse: true 
-});
 
-app.use(cors({ origin: '*' }));
+// Performance and connection telemetry metrics
+const startTime = Date.now();
+let totalRequestsHandled = 0;
 
-// Session backup tracker for requests completely missing origin referers
-let globalSessionLastOrigin = '';
-
-proxy.on('proxyReq', function(proxyReq, req, res, options) {
-  const activeOrigin = req.targetCleanOrigin || globalSessionLastOrigin;
-  if (activeOrigin) {
-    try {
-      const parsed = new URL(activeOrigin);
-      proxyReq.setHeader('host', parsed.host);
-      proxyReq.setHeader('origin', parsed.origin);
-      proxyReq.setHeader('referer', parsed.origin + '/');
-      proxyReq.setHeader('X-Forwarded-For', req.ip);
-    } catch (e) {}
-  }
-  proxyReq.setHeader('accept-encoding', 'identity');
-});
-
-proxy.on('proxyRes', function (proxyRes, req, res) {
-  let chunks = [];
-  const headers = { ...proxyRes.headers };
-  
-  delete headers['content-security-policy'];
-  delete headers['content-security-policy-report-only'];
-  delete headers['x-frame-options'];
-  delete headers['frame-options'];
-  delete headers['clear-site-data'];
-  
-  headers['x-frame-options'] = 'ALLOWALL';
-  headers['access-control-allow-origin'] = '*';
-  headers['access-control-allow-headers'] = '*';
-  headers['access-control-allow-credentials'] = 'true';
-
-  if (headers['set-cookie']) {
-    headers['set-cookie'] = headers['set-cookie'].map(cookie => {
-      return cookie.replace(/Domain=[^;]+;?/i, '').replace(/Secure/i, '');
-    });
-  }
-
-  proxyRes.on('data', function (chunk) {
-    chunks.push(chunk);
-  });
-
-  proxyRes.on('end', function () {
-    let buffer = Buffer.concat(chunks);
-    const contentType = proxyRes.headers['content-type'] || '';
-    const activeOrigin = req.targetCleanOrigin || globalSessionLastOrigin;
-
-    if ((contentType.includes('text/html') || contentType.includes('application/javascript')) && buffer.length > 0 && activeOrigin) {
-      try {
-        let textContent = buffer.toString('utf8');
-        const hostUrl = req.protocol + '://' + req.get('host');
-
-        const escapedOrigin = activeOrigin.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-        const originRegex = new RegExp(escapedOrigin, 'g');
-        textContent = textContent.replace(originRegex, `${hostUrl}/proxy/${activeOrigin}`);
-
-        buffer = Buffer.from(textContent, 'utf8');
-      } catch (err) {}
-    }
-
-    headers['content-length'] = buffer.length;
-    if (!res.headersSent) {
-      res.writeHead(proxyRes.statusCode, headers);
-      res.end(buffer);
-    }
-  });
-});
-
-app.get('/gateway', (req, res) => {
-  const targetUrl = req.query.url;
-  if (!targetUrl) return res.status(400).send('Error: Missing target url.');
-  
+// XOR Key configuration for path de-obfuscation matching the frontend encryption matrix
+const KEY = [120, 101, 110, 97]; 
+function decodeXOR(str) {
   try {
-    const parsedTarget = new URL(targetUrl);
-    globalSessionLastOrigin = parsedTarget.origin;
-    res.redirect(`/proxy/${parsedTarget.origin}${parsedTarget.pathname}${parsedTarget.search}`);
-  } catch (err) {
-    res.status(400).send('Gateway Error: Invalid URL layout.');
-  }
-});
-
-// Matches standard and encoded URL paths natively
-app.all('/proxy/:targetProtocol//:targetHost/*', (req, res) => { routeTraffic(req, res); });
-app.all('/proxy/:targetFullOrigin/*', (req, res) => { routeTraffic(req, res); });
-
-function routeTraffic(req, res) {
-  let rawUrl = req.params.targetFullOrigin || `${req.params.targetProtocol}//${req.params.targetHost}`;
-  const remainder = req.params[0] || '';
-  const queryString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
-  
-  let targetUrl = `${rawUrl}/${remainder}${queryString}`;
-
-  try {
-    const parsedTarget = new URL(targetUrl);
-    req.targetCleanOrigin = parsedTarget.origin;
-    globalSessionLastOrigin = parsedTarget.origin;
-    req.url = parsedTarget.pathname + parsedTarget.search;
-
-    proxy.web(req, res, { target: parsedTarget.origin }, (err) => {
-      if (!res.headersSent) res.status(500).send(`Proxy Error: ${err.message}`);
-    });
-  } catch (err) {
-    if (!res.headersSent) res.status(400).send('Proxy Mapping Runtime Error.');
+    let t = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (t.length % 4) t += '=';
+    let b = Buffer.from(t, 'base64').toString('binary');
+    let o = '';
+    for (let i = 0; i < b.length; i++) {
+      o += String.fromCharCode(b.charCodeAt(i) ^ KEY[i % 4]);
+    }
+    return o;
+  } catch (e) {
+    return null;
   }
 }
 
-// Fallback Route handler: Catches remaining orphan paths and binds them to the active context
-app.all('*', (req, res) => {
-  if (globalSessionLastOrigin) {
-    req.targetCleanOrigin = globalSessionLastOrigin;
-    proxy.web(req, res, { target: globalSessionLastOrigin }, (err) => {
-      if (!res.headersSent) res.status(504).send('Fallback processing dropped.');
+// Global Cors Isolation Defeat & Sandbox Breaking Headers
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', '*');
+  res.header('X-Frame-Options', 'ALLOWALL');
+  res.header('Content-Security-Policy', "frame-ancestors *; default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;");
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// BACKEND ROOT ROUTE: Live Proxy Performance Status Monitor Dashboard
+app.get('/', (req, res) => {
+  const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
+  const hours = Math.floor(uptimeSeconds / 3600);
+  const minutes = Math.floor((uptimeSeconds % 3600) / 60);
+  const seconds = uptimeSeconds % 60;
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>XENA Engine Status</title>
+      <style>
+        body { background: #030303; color: #d4d4d8; font-family: monospace; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        .card { border: 1px solid #181818; padding: 30px; background: #0a0a0a; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.5); width: 340px; }
+        h1 { font-size: 15px; color: #fff; letter-spacing: 0.15em; border-bottom: 1px solid #181818; padding-bottom: 10px; margin-top: 0; }
+        .stat { display: flex; justify-content: space-between; font-size: 12px; margin: 12px 0; }
+        .value { color: #22c55e; font-weight: bold; }
+        .lbl { color: #71717a; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>XENA CORE ROUTER (SERVER.JS)</h1>
+        <div class="stat"><span class="lbl">Engine State:</span><span class="value">ONLINE</span></div>
+        <div class="stat"><span class="lbl">Uptime Metrics:</span><span class="value">${hours}h ${minutes}m ${seconds}s</span></div>
+        <div class="stat"><span class="lbl">Requests Handled:</span><span class="value">${totalRequestsHandled}</span></div>
+        <div class="stat"><span class="lbl">Pipeline Mode:</span><span class="value">High-Grade Dynamic Pipe</span></div>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// HIGH-GRADE CONTENT HOOK: Catches Scramjet paths, raw gateway inputs, and YouTube streams
+app.all(['/xn/:encodedUrl', '/yt/:encodedUrl', '/scram/:encodedUrl', '/gateway'], async (req, res) => {
+  totalRequestsHandled++;
+  
+  // Try decoding from path parameter first; fall back to query parameter
+  let rawTargetUrl = req.params.encodedUrl ? decodeXOR(req.params.encodedUrl) : req.query.url;
+
+  if (!rawTargetUrl) {
+    return res.status(400).send('Error: Invalid Destination Packet');
+  }
+
+  try {
+    const targetUrl = new URL(rawTargetUrl);
+    
+    // Mask request footprints to resemble native client requests
+    const forwardHeaders = {};
+    const secureHeaders = ['user-agent', 'accept', 'accept-language', 'range', 'cookie', 'content-type'];
+    
+    for (let header of secureHeaders) {
+      if (req.headers[header]) forwardHeaders[header] = req.headers[header];
+    }
+    
+    forwardHeaders['host'] = targetUrl.host;
+    forwardHeaders['referer'] = targetUrl.origin;
+
+    // Execute content retrieval pipeline
+    const response = await fetch(targetUrl.href, {
+      method: req.method,
+      headers: forwardHeaders,
+      body: ['POST', 'PUT', 'PATCH'].includes(req.method) ? req : undefined,
+      redirect: 'manual'
     });
-  } else {
-    res.status(404).send('Resource path out of sync. Please reload your target framework.');
+
+    // Intercept redirects seamlessly to process them inside proxy boundaries
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      let location = response.headers.get('location');
+      if (location) {
+        if (!location.startsWith('http')) {
+          location = new URL(location, targetUrl.href).href;
+        }
+        const reEncoded = Buffer.from(location).toString('base64'); 
+        res.writeHead(response.status, { 'Location': `/scram/${reEncoded}` });
+        return res.end();
+      }
+    }
+
+    // Set standard response flags down to the web interface layout
+    res.status(response.status);
+    response.headers.forEach((val, key) => {
+      // Strip framing barriers and restrictive site tracking filters
+      if (!['content-security-policy', 'x-frame-options', 'clear-site-data', 'cross-origin-opener-policy'].includes(key.toLowerCase())) {
+        res.setHeader(key, val);
+      }
+    });
+
+    // Directly pipe chunks down to allow high-speed processing for multimedia files
+    response.body.pipe(res);
+
+  } catch (error) {
+    res.status(500).send(`XENA Routing Error: ${error.message}`);
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`[XENA ENGINE v2] Running stateful context pool on port ${PORT}`);
+// WebSocket Protocol Handshake Mirroring
+const wss = new WebSocketServer({ noServer: true });
+server.on('upgrade', (request, socket, head) => {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
+
+wss.on('connection', (ws, req) => {
+  let targetWsUrl = req.url.split('?wsurl=')[1];
+  if (targetWsUrl) {
+    const remoteWs = new WebSocket(decodeURIComponent(targetWsUrl));
+    remoteWs.on('message', data => ws.send(data));
+    ws.on('message', data => remoteWs.send(data));
+    remoteWs.on('close', () => ws.close());
+    ws.on('close', () => remoteWs.close());
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`XENA Server Engine up on port ${PORT}`);
 });
