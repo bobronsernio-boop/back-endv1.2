@@ -1,14 +1,15 @@
 {
-  "name": "xena-backend",
+  "name": "xena-backend-engine",
   "version": "2.0.0",
-  "description": "Scramjet v2 Pipeline Gateway for XENA",
-  "main": "server.js",
+  "description": "High-grade content delivery and rewrite routing engine for XENA",
+  "main": "index.js",
+  "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "cors": "^2.8.5",
-    "http-proxy": "^1.18.1"
+    "node-fetch": "^3.3.2",
+    "ws": "^8.16.0"
   }
 }
