@@ -2,10 +2,10 @@
   "name": "xena-backend-engine",
   "version": "2.0.0",
   "description": "High-grade content delivery and rewrite routing engine for XENA",
-  "main": "index.js",
+  "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.19.2",
