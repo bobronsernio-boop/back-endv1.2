@@ -7,11 +7,11 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 8080;
 
-// Performance and connection telemetry metrics
+// Performance and telemetry counters
 const startTime = Date.now();
 let totalRequestsHandled = 0;
 
-// XOR Key configuration for path de-obfuscation matching the frontend encryption matrix
+// XOR Configuration matching frontend encryption matrix
 const KEY = [120, 101, 110, 97]; 
 function decodeXOR(str) {
   try {
@@ -28,7 +28,7 @@ function decodeXOR(str) {
   }
 }
 
-// Global Cors Isolation Defeat & Sandbox Breaking Headers
+// Global CORS Isolation & Sandbox Permissive Headers
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Methods', 'GET, HEAD, POST, PUT, DELETE, OPTIONS');
@@ -42,7 +42,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// BACKEND ROOT ROUTE: Live Proxy Performance Status Monitor Dashboard
+// Live Engine Performance Status Monitor Dashboard
 app.get('/', (req, res) => {
   const uptimeSeconds = Math.floor((Date.now() - startTime) / 1000);
   const hours = Math.floor(uptimeSeconds / 3600);
@@ -77,21 +77,32 @@ app.get('/', (req, res) => {
   `);
 });
 
-// HIGH-GRADE CONTENT HOOK: Catches Scramjet paths, raw gateway inputs, and YouTube streams
-app.all(['/xn/:encodedUrl', '/yt/:encodedUrl', '/scram/:encodedUrl', '/gateway'], async (req, res) => {
+// Comprehensive Content Interception Gateway
+// This catches both regular query string gateway targets and raw versioned routing tokens
+app.all([
+  '/gateway',
+  '/xn/:encodedUrl',
+  '/scram/:encodedUrl',
+  '/xn@:version/:encodedUrl',
+  '/scram@:version/:encodedUrl'
+], async (req, res) => {
   totalRequestsHandled++;
-  
-  // Try decoding from path parameter first; fall back to query parameter
-  let rawTargetUrl = req.params.encodedUrl ? decodeXOR(req.params.encodedUrl) : req.query.url;
+
+  let rawTargetUrl = req.query.url;
+
+  // Fallback to decode path params if query context isn't used directly
+  if (!rawTargetUrl && req.params.encodedUrl) {
+    rawTargetUrl = decodeXOR(req.params.encodedUrl);
+  }
 
   if (!rawTargetUrl) {
-    return res.status(400).send('Error: Invalid Destination Packet');
+    return res.status(400).send('Error: Missing Destination Target Parameters');
   }
 
   try {
     const targetUrl = new URL(rawTargetUrl);
     
-    // Mask request footprints to resemble native client requests
+    // Construct transmission headers mimicking a vanilla web browser footprint
     const forwardHeaders = {};
     const secureHeaders = ['user-agent', 'accept', 'accept-language', 'range', 'cookie', 'content-type'];
     
@@ -102,7 +113,7 @@ app.all(['/xn/:encodedUrl', '/yt/:encodedUrl', '/scram/:encodedUrl', '/gateway']
     forwardHeaders['host'] = targetUrl.host;
     forwardHeaders['referer'] = targetUrl.origin;
 
-    // Execute content retrieval pipeline
+    // Fetch the target resource data stream
     const response = await fetch(targetUrl.href, {
       method: req.method,
       headers: forwardHeaders,
@@ -110,37 +121,36 @@ app.all(['/xn/:encodedUrl', '/yt/:encodedUrl', '/scram/:encodedUrl', '/gateway']
       redirect: 'manual'
     });
 
-    // Intercept redirects seamlessly to process them inside proxy boundaries
+    // Capture response redirects inside the proxy pipeline
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       let location = response.headers.get('location');
       if (location) {
         if (!location.startsWith('http')) {
           location = new URL(location, targetUrl.href).href;
         }
-        const reEncoded = Buffer.from(location).toString('base64'); 
-        res.writeHead(response.status, { 'Location': `/scram/${reEncoded}` });
+        res.writeHead(response.status, { 'Location': `/gateway?url=${encodeURIComponent(location)}` });
         return res.end();
       }
     }
 
-    // Set standard response flags down to the web interface layout
+    // Set matching status code and transfer clean headers back to user agent
     res.status(response.status);
     response.headers.forEach((val, key) => {
-      // Strip framing barriers and restrictive site tracking filters
+      // Clean restrictive policy layers that block frame embedding or asset injection
       if (!['content-security-policy', 'x-frame-options', 'clear-site-data', 'cross-origin-opener-policy'].includes(key.toLowerCase())) {
         res.setHeader(key, val);
       }
     });
 
-    // Directly pipe chunks down to allow high-speed processing for multimedia files
+    // Pipe the data chunks sequentially to preserve high performance on audio and video streaming elements
     response.body.pipe(res);
 
   } catch (error) {
-    res.status(500).send(`XENA Routing Error: ${error.message}`);
+    res.status(500).send(`XENA Routing Engine Error: ${error.message}`);
   }
 });
 
-// WebSocket Protocol Handshake Mirroring
+// WebSocket Protocol Pass-Through Handshake Mirroring
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
   wss.handleUpgrade(request, socket, head, (ws) => {
